@@ -163,12 +163,12 @@ def _ensure_label_list(value: Any) -> list[str]:
 
 _VERBOSE_ICONS = {
     "info": "ℹ️",
-    "quartiles": "📊",
-    "bounds": "🎯",
-    "outliers": "⚠️",
+    "quartiles": "🍕",
+    "bounds": "🚧",
+    "outliers": "☢️",
     "examples": "🔍",
     "result": "✅",
-    "update": "🛠️",
+    "update": "🔄️",
 }
 
 
@@ -245,17 +245,18 @@ def compute_outlier_count(
     return outliers
 
 
-def compute_iqr_malus(
+def compute_outlier_mask(
     series: pd.Series,
     compute_method: str | None = None,
     q: Iterable[float] | None = None,
     verbose: bool = False,
     iqr_coefficient: float = 1.5,
 ) -> pd.Series:
-    """Return a binary malus flag marking outliers according to the bounds.
+    """Return a boolean mask marking outliers according to the bounds.
 
     The function mirrors :func:`compute_outlier_count` by supporting both IQR and
-    quantile-based bounds while returning a 0/1 Series aligned with ``series``.
+    quantile-based bounds while returning a boolean Series aligned with
+    ``series``.
     """
 
     if compute_method is None:
@@ -271,7 +272,7 @@ def compute_iqr_malus(
     _emit(verbose, "info", f"Removed {dropped} missing value(s) before analysis.")
     if cleaned.empty:
         _emit(verbose, "result", "No data available after dropping missing values.")
-        return pd.Series(0, index=series.index, dtype=int)
+        return pd.Series(False, index=series.index, dtype=bool)
 
     lower, upper = get_outlier_bounds(
         cleaned,
@@ -282,18 +283,19 @@ def compute_iqr_malus(
     )
 
     mask = (series < lower) | (series > upper)
-    outliers = int(mask.fillna(False).sum())
+    mask_filled = mask.fillna(False)
+    outliers = int(mask_filled.sum())
     pct_outliers = mask.mean(skipna=True) * 100 if len(series) else 0.0
     _emit(
         verbose,
         "result",
         (
-            f"Generated malus for {outliers} outlier(s) "
+            f"Generated outlier mask with {outliers} positive flag(s) "
             f"({pct_outliers:.1f}% of observations)."
         ),
     )
 
-    return mask.fillna(False).astype(int)
+    return mask_filled.astype(bool)
 
 
 def add_malus_score(
