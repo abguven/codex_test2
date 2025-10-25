@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from numbers import Real
-from typing import Iterable, Sequence, Tuple
+from typing import Any, Iterable, Sequence, Tuple
 
 import pandas as pd
 
@@ -146,6 +146,21 @@ def _normalise_quantiles(q: Iterable[float]) -> Tuple[float, float]:
     return float(low), float(high)
 
 
+def _ensure_label_list(value: Any) -> list[str]:
+    """Coerce a stored label collection into a standalone list of strings."""
+
+    if isinstance(value, list):
+        return [str(item) for item in value]
+
+    if isinstance(value, (tuple, set)):
+        return [str(item) for item in value]
+
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return []
+
+    return [str(value)]
+
+
 _VERBOSE_ICONS = {
     "info": "ℹ️",
     "quartiles": "📊",
@@ -153,6 +168,7 @@ _VERBOSE_ICONS = {
     "outliers": "⚠️",
     "examples": "🔍",
     "result": "✅",
+    "update": "🛠️",
 }
 
 
@@ -278,4 +294,116 @@ def compute_iqr_malus(
     )
 
     return mask.fillna(False).astype(int)
+
+
+def add_malus_score(
+    df: pd.DataFrame,
+    mask: pd.Series,
+    label: str,
+    score: int = 1,
+    *,
+    label_col: str = "malus_labels",
+    score_col: str = "malus_score",
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """Add a malus label and score to the rows selected by ``mask``.
+
+    Parameters
+    ----------
+    df:
+        DataFrame that will receive the malus updates. The object is modified in
+        place and returned for convenience.
+    mask:
+        Boolean Series indicating which rows should receive the malus. The mask
+        is aligned on ``df.index`` and any missing positions are treated as
+        ``False``.
+    label:
+        Name of the malus to append to ``label_col`` when it is not already
+        present for a row.
+    score:
+        Numeric value to add to ``score_col`` for each affected row. Defaults to
+        ``1``.
+    label_col:
+        Name of the column that stores the collection of malus labels. When the
+        column does not exist it is created with empty lists.
+    score_col:
+        Name of the numeric column accumulating the malus score. When missing it
+        is initialised to ``0``.
+    verbose:
+        When ``True``, emit notebook-friendly diagnostics describing the
+        operation.
+
+    Returns
+    -------
+    pd.DataFrame
+        The ``df`` reference, updated with the malus information.
+    """
+
+    if not isinstance(mask, pd.Series):
+        raise TypeError("mask must be a pandas Series of booleans")
+
+    if not isinstance(label, str) or not label:
+        raise ValueError("label must be a non-empty string")
+
+    if not isinstance(score, Real):
+        raise TypeError("score must be a numeric value")
+
+    if pd.isna(score):
+        raise ValueError("score must not be NaN")
+
+    mask_aligned = mask.reindex(df.index, fill_value=False)
+    mask_values = mask_aligned.dropna()
+    if not mask_values.isin([True, False]).all():
+        raise ValueError("mask must contain only boolean values")
+
+    mask_bool = mask_aligned.fillna(False).astype(bool)
+
+    selected = int(mask_bool.sum())
+    _emit(
+        verbose,
+        "info",
+        (
+            f"Preparing to apply malus '{label}' with score {score} "
+            f"to {selected} row(s)."
+        ),
+    )
+
+    if label_col not in df.columns:
+        df[label_col] = [[] for _ in range(len(df))]
+        _emit(verbose, "update", f"Initialised '{label_col}' column with empty labels.")
+    else:
+        df[label_col] = [_ensure_label_list(value) for value in df[label_col]]
+
+    if score_col not in df.columns:
+        df[score_col] = 0
+        _emit(verbose, "update", f"Initialised '{score_col}' column with zeros.")
+    else:
+        df[score_col] = pd.to_numeric(df[score_col], errors="raise").fillna(0)
+
+    if selected == 0:
+        _emit(verbose, "result", "No rows matched the provided mask.")
+        return df
+
+    applied = 0
+    skipped = 0
+    for idx in df.index[mask_bool]:
+        labels = df.at[idx, label_col]
+        if label in labels:
+            skipped += 1
+            continue
+
+        df.at[idx, label_col] = [*labels, label]
+        df.at[idx, score_col] = df.at[idx, score_col] + score
+        applied += 1
+
+    _emit(
+        verbose,
+        "result",
+        (
+            f"Applied malus '{label}' to {applied} row(s). "
+            f"Skipped {skipped} already containing the label."
+        ),
+    )
+
+    return df
 
